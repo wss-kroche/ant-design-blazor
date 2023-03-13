@@ -10,14 +10,22 @@
                     InlineFlexMode=false>
         <Overlay>
             <CascadingValue Value=this>
-                @if (OriginalOptions.Count > 0)
+                @if (LoadingOptions)
+                {
+                    <Spin />
+                }
+                else if (OptionsWorkingSetVisible.Any())
                 {
                     <ul class="ant-mentions-dropdown-menu ant-mentions-dropdown-menu-root ant-mentions-dropdown-menu-vertical">
-                        @foreach (var item in ShowOptions)
+                        @foreach (var item in OptionsWorkingSetVisible)
                         {
-                            <MentionsOption Value="@item.Value">@item.ChildContent</MentionsOption>
+                            <MentionsOption Value="@item.Value">@item.Value</MentionsOption>
                         }
                     </ul>
+                }
+                else if (!OptionsWorkingSetVisible.Any())
+                {
+                    <Empty Simple />
                 }
                 else
                 {
@@ -35,10 +43,10 @@
                           @attributes="@Attributes"
                           @onkeydown="OnKeyDown"
                           @oninput="OnInput"
-                          style="@Style"
-                          class="rc-textarea"
-                          placeholder="@Placeholder"
-                          rows="@Rows" />
+                              style="@Style"
+                              class="rc-textarea"
+                              placeholder="@Placeholder"
+                              rows="@Rows" />
                 }
                 else
                 {

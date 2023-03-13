@@ -1,11 +1,29 @@
 ﻿<div>
-    <Mentions Placeholder="please enter @@" @bind-Value="value">
-        <MentionsOption Value="afc163">afc163</MentionsOption>
-        <MentionsOption Value="zombieJ">zombieJ</MentionsOption>
-        <MentionsOption Value="yesmeck">yesmeck</MentionsOption>
-    </Mentions>
+    <Mentions Placeholder="please enter @@" @bind-Value="value2" DataSource="@Options" OnSearch="@OnSearch"></Mentions>
 </div>
 
 @code {
     string value { get; set; }
+
+    string value2{ get; set; }
+
+    public IEnumerable<MentionsItem> Options = new List<MentionsItem>();
+
+    public async void OnSearch(string newValue)
+    {
+        Console.WriteLine("OnSearch {0}", newValue);
+
+        await Task.Delay(1000);
+        Options = new[]
+        {
+            newValue,
+            $"{newValue}-2",
+            $"{newValue}-3",
+            $"{newValue}-4"
+        }.Select(x => new MentionsItem() { Value = x, Label = @<span>@x</span> }).ToList();
+
+        StateHasChanged();
+
+        Console.WriteLine("OnSearch {0} Result {1}", newValue, JsonSerializer.Serialize(Options.Select(x => x.Value)));
+    }
 }

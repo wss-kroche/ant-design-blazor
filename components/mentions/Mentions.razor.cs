@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 using AntDesign.Internal;
 using Microsoft.AspNetCore.Components;
@@ -9,6 +10,11 @@ using Microsoft.JSInterop;
 
 namespace AntDesign
 {
+    public class MentionsItem
+    {
+        public string Value { get; set; }
+        public RenderFragment Label { get; set; }
+    }
     public partial class Mentions
     {
         [Parameter] public RenderFragment ChildContent { get; set; }
@@ -26,11 +32,45 @@ namespace AntDesign
 
         [Parameter] public RenderFragment<MentionsTextareaTemplateOptions> TextareaTemplate { get; set; }
 
+        private IEnumerable<MentionsItem> _previousDataSource;
+
+        private IEnumerable<MentionsItem> _dataSource;
+
+        [Parameter]
+        public IEnumerable<MentionsItem> DataSource
+        {
+            get
+            {
+                return _dataSource;
+            }
+            set
+            {
+                _dataSource = value;
+                OptionsWorkingSet = _dataSource is null
+                    ? OriginalOptions.Select(x => new MentionsItem() { Value = x.Value, Label = x.ChildContent })
+                    : _dataSource;
+            }
+        }
+        [Parameter] public EventCallback<string> OnSearch { get; set; }
+
         internal List<MentionsOption> OriginalOptions { get; set; } = new List<MentionsOption>();
-        internal List<MentionsOption> ShowOptions { get; } = new List<MentionsOption>();
         private OverlayTrigger _overlayTrigger;
+        private Task _searchTask;
+
         internal string ActiveOptionValue { get; set; }
-        internal int ActiveOptionIndex => ShowOptions.FindIndex(x => x.Value == ActiveOptionValue);
+        internal int ActiveOptionIndex => OptionsWorkingSetVisible.FindIndex(x => x.Value == ActiveOptionValue);
+        internal bool LoadingOptions { get; private set; }
+
+        /// <summary>
+        /// "working set" of options. This is to allow the internal workings of the class 
+        /// to only reference one datasource but provide multiple options to consumers of the component.
+        /// </summary>
+        private IEnumerable<MentionsItem> OptionsWorkingSet { get; set; }
+
+        /// <summary>
+        /// Visible options from the "working set"
+        /// </summary>
+        private List<MentionsItem> OptionsWorkingSetVisible { get; set; } = new List<MentionsItem>();
 
         private void SetClassMap()
         {
@@ -73,24 +113,43 @@ namespace AntDesign
         {
             if (firstRender)
             {
-                ShowOptions.Clear();
-                ShowOptions.AddRange(OriginalOptions);
+                OptionsWorkingSetVisible.Clear();
+                OptionsWorkingSetVisible.AddRange(OptionsWorkingSet);
                 await JsInvokeAsync(JSInteropConstants.SetEditorKeyHandler, DotNetObjectReference.Create(this), _overlayTrigger.RefBack.Current);
             }
             await base.OnAfterRenderAsync(firstRender);
         }
+
+        protected async override Task OnParametersSetAsync()
+        {
+            if (DataSource is not null && ChildContent is not null)
+            {
+                throw new Exception("Cannot set DataSource and ChildContent at the same time - choose one.");
+            }
+
+            if (_searchTask is not null && _searchTask.IsCompleted)
+            {
+                LoadingOptions = false;
+                _previousDataSource = DataSource;
+                _searchTask = null;
+                await ShowOverlay(true, true);
+            }
+
+            await base.OnParametersSetAsync();
+        }
+
         [JSInvokable]
         public void PrevOption()
         {
             var index = Math.Max(0, ActiveOptionIndex - 1);
-            ActiveOptionValue = ShowOptions[index].Value;
+            ActiveOptionValue = OptionsWorkingSetVisible[index].Value;
             StateHasChanged();
         }
         [JSInvokable]
         public void NextOption()
         {
-            var index = Math.Min(ActiveOptionIndex + 1, ShowOptions.Count - 1);
-            ActiveOptionValue = ShowOptions[index].Value;
+            var index = Math.Min(ActiveOptionIndex + 1, OptionsWorkingSetVisible.Count - 1);
+            ActiveOptionValue = OptionsWorkingSetVisible[index].Value;
             StateHasChanged();
         }
         [JSInvokable]
@@ -110,10 +169,13 @@ namespace AntDesign
             await JS.InvokeAsync<double[]>(JSInteropConstants.SetPopShowFlag, true);
             if (resetOptions)
             {
-                ShowOptions.Clear();
-                ShowOptions.AddRange(OriginalOptions);
+                OptionsWorkingSetVisible.Clear();
+                OptionsWorkingSetVisible.AddRange(OptionsWorkingSet);
             }
-            ActiveOptionValue = ShowOptions.First().Value;
+            if (OptionsWorkingSetVisible.Any())
+            {
+                ActiveOptionValue = OptionsWorkingSetVisible.First().Value;
+            }
             if (reCalcPosition)
             {
                 var pos = await JS.InvokeAsync<double[]>(JSInteropConstants.GetCursorXY, _overlayTrigger.RefBack.Current);
@@ -137,37 +199,55 @@ namespace AntDesign
         {
             Value = args.Value.ToString();
             await ValueChanged.InvokeAsync(Value);
+
             if (Value.EndsWith("@"))
             {
                 await ShowOverlay(true, true);
                 return;
             }
+
             var focusPosition = await JS.InvokeAsync<int>(JSInteropConstants.GetProp, _overlayTrigger.Ref, "selectionStart");
             if (focusPosition == 0)
             {
                 await HideOverlay();
                 return;
-            };
-            var showPop = false;
+            }
+
             var v = Value.Substring(0, focusPosition);  //从光标处切断,向前找匹配项
             var lastIndex = v.LastIndexOf("@");
             if (lastIndex >= 0)
             {
                 var lastOption = v.Substring(lastIndex + 1);
-                ShowOptions.Clear();
-                ShowOptions.AddRange(OriginalOptions.Where(x => x.Value.Contains(lastOption, StringComparison.OrdinalIgnoreCase)).ToList());
-                if (ShowOptions.Count > 0) showPop = true;
-            }
 
-            if (showPop)
+                await SearchMention(lastOption);
+            }
+        }
+
+        internal async Task SearchMention(string search)
+        {
+            if (OnSearch.HasDelegate)
             {
-                await ShowOverlay(false, true);
+                LoadingOptions = true;
+                OptionsWorkingSet = Enumerable.Empty<MentionsItem>();
+                await ShowOverlay(true, true);
+                _searchTask = OnSearch.InvokeAsync(search);
+                await InvokeStateHasChangedAsync();
             }
             else
             {
-                await HideOverlay();
+                OptionsWorkingSetVisible.Clear();
+                OptionsWorkingSetVisible.AddRange(OptionsWorkingSet.Where(x => x.Value.Contains(search, StringComparison.OrdinalIgnoreCase)).ToList());
+                if (OptionsWorkingSetVisible.Count > 0)
+                {
+                    await ShowOverlay(false, true);
+                }
+                else
+                {
+                    await HideOverlay();
+                }
             }
         }
+
         internal async Task ItemClick(string optionValue)
         {
             var focusPosition = await JS.InvokeAsync<int>(JSInteropConstants.GetProp, _overlayTrigger.Ref, "selectionStart");
@@ -177,15 +257,15 @@ namespace AntDesign
             var nextText = Value.Substring(focusPosition);
             if (nextText.StartsWith(' ')) nextText = nextText.Substring(1);
             var option = " @" + optionValue + " ";
-          
+
             Value = preText + option + nextText;
             await ValueChanged.InvokeAsync(Value);
-          
+
             var pos = preText.Length + option.Length;
             var js = $"document.querySelector('[_bl_{_overlayTrigger.Ref.Id}]').selectionStart = {pos};";
             js += $"document.querySelector('[_bl_{_overlayTrigger.Ref.Id}]').selectionEnd = {pos}";
             await JS.InvokeVoidAsync("eval", js);
-         
+
             await HideOverlay();
             await InvokeStateHasChangedAsync();
         }
